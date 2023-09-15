@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Swagger Files Parser</title>
+	</head>
+	<body>
+		<input type="file" id="fileInput" accept=".json" />
+		<button onclick="parseSwagger()">Swagger Files Parser</button>
+		<pre id="analysisOutput"></pre>
+		<p id="consoleReadMsg"></p>
+		<pre id="consoleOutput"></pre>
+
+		<script>
+			function parseSwagger() {
+				const fileInput = document.getElementById('fileInput');
+				const consoleOutput = document.getElementById('consoleOutput');
+				const consoleReadMsg = document.getElementById('consoleReadMsg');
+				const file = fileInput.files[0];
+				const reader = new FileReader();
+
+				reader.onload = function (event) {
+					const content = event.target.result;
+					try {
+						const swaggerData = JSON.parse(content);
+						const testObjects = parseSwaggerToTestObjects(swaggerData);
+						consoleOutput.innerText = JSON.stringify(testObjects, null, 2);
+						consoleReadMsg.innerText = "----- Check your console for generated tests. Below we see the test-objects that were created";
+						const analysis = parseSwaggerToAnalysis(swaggerData);
+						//analysisOutput.innerText = JSON.stringify(analysis);
+						
+						convertTheTestObjectsToActualTestCode(testObjects);
+						
+					} catch (error) {
+						consoleOutput.innerText =
+							'Error parsing the Swagger file: ' + error.message;
+					}
+				};
+
+				reader.readAsText(file);
+			}
+			
+			function parseSwaggerToAnalysis(swaggerData) { 
+				const analysisLines = [];
+				const line = 'This is analysis line number 1';
+				analysisLines.push(line);
+				return analysisLines;
+			}
+
+			function parseSwaggerToTestObjects(swaggerData) {
+			
+				const testObjects = [];
+
+				for (const path in swaggerData.paths) {
+					for (const method in swaggerData.paths[path]) {
+						const endpoint = path;
+						const details = swaggerData.paths[path][method];
+						const responses = Object.keys(details.responses);
+
+						for (const responseCode of responses) {
+							const paramsHeader = filterParameters(details, 'header', true);
+							const paramsPath = filterParameters(details, 'path', true);
+							const paramsQueryString = filterParameters(details, 'query', true);
+							const paramsFormData = filterParameters(details, 'formData', true);
+							const paramsCookie = filterParameters(details, 'cookie', true);
+							const optionalParamsHeader = filterParameters(details, 'header', false);
+							const optionalParamsPath = filterParameters(details, 'path', false);
+							const optionalParamsQueryString = filterParameters(details, 'query', false);
+							const optionalParamsFormData = filterParameters(details, 'formData', false);
+							const optionalParamsCookie = filterParameters(details, 'cookie', false);
+							const requestBody = getRequestBody(details, swaggerData);
+							const contentTypes = details.responses[responseCode]?.content
+							  ? Object.keys(details.responses[responseCode].content)
+							  : 'application/json'; // Fixed the typo in the content type
+							const description = details.description;
+
+							const testObject = {
+							  endpoint: endpoint,
+							  method: method.toUpperCase(),
+							  responseCode: responseCode,
+							  requiredHeadersParameters: mapParameters(paramsHeader),
+							  requiredPathParameters: mapParameters(paramsPath),
+							  requiredQueryStringParameters: mapParameters(paramsQueryString),
+							  requiredFormParameters: mapParameters(paramsFormData),
+							  requiredCookiesParameters: mapParameters(paramsCookie),
+							  optionalParametersHeader: mapParameters(optionalParamsHeader),
+							  optionalParametersPath: mapParameters(optionalParamsPath),
+							  optionalParametersQuery: mapParameters(optionalParamsQueryString),
+							  optionalParametersFormData: mapParameters(optionalParamsFormData),
+							  optionalParametersCookie: mapParameters(optionalParamsCookie),
+							  requestBody: requestBody,
+							  contentTypes: contentTypes,
+							  description: description,
+							};
+
+							testObjects.push(testObject);
+						}
+					}
+				}
+
+				return testObjects;
+			}
+			
+			function mapParameters(params, schemaKey) {
+			  return params.map((param) => ({
+				name: param.name,
+				type: param.schema ? param.schema.type : param.type ? param.type : 'unknown',
+			  }));
+			}
+			
+			function filterParameters(details, inValue, requiredValue) {
+			  return details.parameters
+				? details.parameters.filter((param) => param.in === inValue && param.required === requiredValue)
+				: [];
+			}
+
+			function getRequestBody(details, swaggerData) {
+				if (details.requestBody && details.requestBody.content) {
+					const contentTypes = Object.keys(details.requestBody.content);
+
+					for (const contentType of contentTypes) {
+						if (
+							details.requestBody.content[contentType].schema &&
+							details.requestBody.content[contentType].schema.$ref
+						) {
+							const ref = details.requestBody.content[contentType].schema.$ref.replace(
+								'#/components/schemas/',
+								''
+							);
+							const requestBodyDefinition =
+								swaggerData.components &&
+								swaggerData.components.schemas &&
+								swaggerData.components.schemas[ref];
+
+							if (requestBodyDefinition) {
+								return requestBodyDefinition;
+							}
+						}
+					}
+				}
+
+				if (details.requestBody && details.requestBody.$ref) {
+					const ref = details.requestBody.$ref.replace(
+						'#/components/requestBodies/',
+						''
+					);
+					const requestBodyDefinition =
+						swaggerData.components &&
+						swaggerData.components.requestBodies &&
+						swaggerData.components.requestBodies[ref];
+
+					if (requestBodyDefinition && requestBodyDefinition.content) {
+						const contentTypes = Object.keys(requestBodyDefinition.content);
+
+						for (const contentType of contentTypes) {
+							if (
+								requestBodyDefinition.content[contentType].schema &&
+								requestBodyDefinition.content[contentType].schema.$ref
+							) {
+								const ref = requestBodyDefinition.content[
+									contentType
+								].schema.$ref.replace('#/components/schemas/', '');
+								const requestBodySchema = swaggerData.components.schemas[ref];
+
+								if (requestBodySchema) {
+									return requestBodySchema;
+								}
+							}
+						}
+					}
+				}
+
+				return undefined;
+			}
+			
+			function convertTheTestObjectsToActualTestCode(testObjects) { 
+				testObjects.forEach((testObject, index) => {
+				  const testCode = generateAPITestCode(testObject);
+				  console.log(`Test ${index + 1}:`);
+				  console.log(testCode);
+				});
+			
+			}
+			
+			
+			// Function to generate Cypress API test code for an object
+			function generateAPITestCode(apiObject) {
+			  const {
+				endpoint,
+				method,
+				responseCode,
+				requiredHeadersParameters,
+				requiredPathParameters,
+				requiredQueryStringParameters,
+				requiredFormParameters,
+				requiredCookiesParameters,
+				optionalParametersHeader,
+				optionalParametersPath,
+				optionalParametersQuery,
+				optionalParametersFormData,
+				optionalParametersCookie,
+				contentTypes,
+				requestBody,
+				description
+			  } = apiObject;
+
+			  // Function to generate the required parameters for the request
+			  function generateHeaderParameters(requiredParameters) {
+				let parametersString = "";
+				if (requiredParameters.length > 0) {
+				  parametersString = requiredParameters.map((param) => {
+					return `"${param.name}": "${param.type}"`;
+				    }).join(",\n    ");
+				}
+				return parametersString;
+			  }
+			  
+			  // Parse the querystring parameters
+			  function generateRequiredQueryStringParameters(requiredQueryStringParameters) {
+				  const queryString = {};
+				  requiredQueryStringParameters.forEach((param) => {
+					queryString[param.name] = param.value;
+				  });
+				  return queryString;
+				}
+				
+			  // Parse the path parameters 	
+				function generatePathParametersConstants(requiredPathParameters) {
+				  if (requiredPathParameters.length > 0) {
+					const listOfPathParamsInCode = [];
+					requiredPathParameters.forEach((param) => {
+					  let pathParamToAddToList = `const ${param.name} = ${param.type}\n`;
+					  listOfPathParamsInCode.push(pathParamToAddToList);
+					});
+					return listOfPathParamsInCode.join('');
+				  } else {
+					return '';
+				  }
+				}
+
+			  // Construct the Cypress API test code as a string
+			  // todo: Parse cookies (requiredCookiesParameters)
+			  // todo: Parse formData 
+			  const testCode = `
+			    ${generatePathParametersConstants(requiredPathParameters)}
+				it("should make a ${method} request to ${endpoint} and expect a ${responseCode} response", () => {				  
+				  cy.request({
+					method: "${method}",
+					url: "${endpoint}",
+					headers : {
+						${generateHeaderParameters(requiredHeadersParameters)}
+						${generateHeaderParameters(optionalParametersHeader)}
+					}
+					qs: ${JSON.stringify(generateRequiredQueryStringParameters(requiredQueryStringParameters))},					
+				  }).then((response) => {
+					expect(response.status).to.eq(${parseInt(responseCode)});
+				  });
+				});
+			  `;
+
+			  return testCode;
+			}
+			
+			
+			
+		</script>
+	</body>
+</html>
